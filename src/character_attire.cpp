@@ -5,16 +5,17 @@
 #include <climits>
 #include <cmath>
 #include <iterator>
-#include <memory>
 #include <numeric>
 #include <ostream>
 
+#include "avatar.h"
 #include "avatar_action.h"
 #include "bodygraph.h"
 #include "calendar.h"
 #include "cata_utility.h"
 #include "character.h"
 #include "coordinates.h"
+#include "craft_reservation.h"
 #include "creature.h"
 #include "damage.h"
 #include "debug.h"
@@ -27,7 +28,6 @@
 #include "flag.h"
 #include "flexbuffer_json.h"
 #include "game_constants.h"
-#include "inventory.h"
 #include "item_contents.h"
 #include "item_pocket.h"
 #include "itype.h"
@@ -38,7 +38,6 @@
 #include "messages.h"
 #include "mutation.h"
 #include "output.h"
-#include "pimpl.h"
 #include "pocket_type.h"
 #include "relic.h"
 #include "rng.h"
@@ -409,8 +408,9 @@ std::optional<std::list<item>::iterator> outfit::wear_item( Character &guy, cons
     if( do_sort_items ) {
         new_item_it->on_wear( guy );
 
-        guy.inv->update_invlet( *new_item_it );
-        guy.inv->update_cache_with_item( *new_item_it );
+        if( guy.is_avatar() ) {
+            guy.as_avatar()->add_invlet_to_new_item( *new_item_it );
+        }
     }
 
     if( do_calc_encumbrance ) {
@@ -1206,15 +1206,12 @@ bool outfit::natural_attack_restricted_on( const sub_bodypart_id &bp ) const
     return false;
 }
 
-std::list<item> outfit::remove_worn_items_with( const std::function<bool( item & )> &filter,
+std::list<item> outfit::remove_worn_items_with( const std::function<bool( const item & )> &filter,
         Character &guy )
 {
     std::list<item> result;
     for( auto iter = worn.begin(); iter != worn.end(); ) {
         if( filter( *iter ) ) {
-            if( iter->can_unload() ) {
-                iter->spill_contents( guy );
-            }
             iter->on_takeoff( guy );
             result.splice( result.begin(), worn, iter++ );
         } else {
@@ -1733,7 +1730,8 @@ std::list<item> outfit::use_amount( const itype_id &it, int quantity,
                                     Character &wearer )
 {
     for( auto a = worn.begin(); a != worn.end() && quantity > 0; ) {
-        if( a->use_amount( it, quantity, used, filter ) ) {
+        if( !craft_reservation::contains_reserved( *a ) &&
+            a->use_amount( item_location( wearer, &*a ), it, quantity, used, filter ) ) {
             a->on_takeoff( wearer );
             a = worn.erase( a );
         } else {
@@ -2034,7 +2032,7 @@ void outfit::fire_options( Character &guy, std::vector<std::string> &options,
                            std::vector<std::function<void()>> &actions )
 {
     for( item &clothing : worn ) {
-        std::vector<item *> guns = clothing.items_with( []( const item & it ) {
+        std::vector<item *> guns = item_location( guy, &clothing ).items_with( []( const item & it ) {
             return it.is_gun();
         } );
 
@@ -2203,6 +2201,7 @@ void outfit::prepare_bodymap_info( bodygraph_info &info, const bodypart_id &bp,
     // general body part stats
     info.part_hp_cur = person.get_part_hp_cur( bp );
     info.part_hp_max = person.get_part_hp_max( bp );
+    info.avg_env_protection = person.get_env_resist( bp );
     info.wetness = person.get_part_wetness_percentage( bp );
     info.temperature = { units::to_legacy_bodypart_temp( person.get_part_temp_conv( bp ) ), display::bodytemp_color( person, bp ) };
     std::pair<std::string, nc_color> tmp_approx = display::temp_text_color( person, bp.id() );

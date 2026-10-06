@@ -7,7 +7,6 @@
 #include <climits>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <list>
 #include <map>
 #include <optional>
@@ -74,7 +73,6 @@ class dispersion_sources;
 class effect;
 class enchant_cache;
 class faction;
-class inventory;
 class known_magic;
 class ma_technique;
 class map;
@@ -1595,9 +1593,6 @@ class Character : public Creature, public visitable
 
         int calc_spell_training_cost( bool knows, int difficulty, int level ) const;
 
-        // TODO: Remove remaining calls to insert into the raw inventory and remove functions where appropriate so this can be removed
-        void migrate_items_to_storage( bool disintegrate );
-
         /**
          * Displays menu with body part hp, optionally with hp estimation after healing.
          * Returns selected part.
@@ -2130,7 +2125,7 @@ class Character : public Creature, public visitable
                            const itype_id &device_id = itype_id::NULL_ID() ) const;
 
         /** Returns nearby items which match the provided predicate */
-        std::vector<item_location> nearby( const std::function<bool( const item *, const item * )> &func,
+        std::vector<item_location> nearby( const std::function<bool( const item_location & )> &func,
                                            int radius = 1 ) const;
 
         /**
@@ -2138,7 +2133,7 @@ class Character : public Creature, public visitable
          * content (@ref item::contents is not checked).
          * If the filter function returns true, the item is removed.
          */
-        std::list<item> remove_worn_items_with( const std::function<bool( item & )> &filter );
+        std::list<item> remove_worn_items_with( const std::function<bool( const item & )> &filter );
 
         void clear_worn();
 
@@ -2150,7 +2145,7 @@ class Character : public Creature, public visitable
         /** Return the item pointer of the item with given invlet, return nullptr if
          * the player does not have such an item with that invlet. Don't use this on npcs.
          * Only use the invlet in the user interface, otherwise always use the item position. */
-        item *invlet_to_item( int invlet ) const;
+        item_location invlet_to_item( int invlet ) const;
 
         // Returns the item with a given inventory position.
         item &i_at( int position );
@@ -2253,10 +2248,6 @@ class Character : public Creature, public visitable
          */
         void handle_contents_changed( const std::vector<item_location> &containers );
 
-        /** Only use for UI things. Returns all invlets that are currently used in
-         * the player inventory, the weapon slot and the worn items. */
-        std::bitset<std::numeric_limits<char>::max()> allocated_invlets() const;
-
         /**
          * Whether the player carries an active item of the given item type.
          */
@@ -2284,7 +2275,7 @@ class Character : public Creature, public visitable
         /**
          * Searches for weapons and magazines that can be reloaded.
          */
-        std::vector<item_location> find_reloadables();
+        std::vector<item_location> find_reloadables() const;
         /**
          * Counts ammo and UPS charges (lower of) for a given gun on the character.
          */
@@ -2369,15 +2360,11 @@ class Character : public Creature, public visitable
         /// struct offers two possible tweaks: a collection of items and
         /// counts to remove, or an entire replacement inventory.
         struct item_tweaks {
-            item_tweaks() : without_items( nullptr ), replace_inv( nullptr ) {}
+            item_tweaks() : without_items( nullptr ) {}
             explicit item_tweaks( const std::map<const item *, int> &w ) :
-                without_items( &w ), replace_inv( nullptr )
-            {}
-            explicit item_tweaks( const inventory &r ) :
-                without_items( nullptr ), replace_inv( &r )
+                without_items( &w )
             {}
             const std::map<const item *, int> *const without_items;
-            const inventory *const replace_inv;
         };
 
         units::mass weight_carried_with_tweaks( const item_tweaks &tweaks ) const;
@@ -2901,7 +2888,6 @@ class Character : public Creature, public visitable
         player_activity activity;
         std::list<player_activity> backlog;
         std::optional<tripoint_abs_ms> destination_point;
-        pimpl<inventory> inv;
         itype_id last_item;
     private:
         item weapon;
@@ -3099,7 +3085,7 @@ class Character : public Creature, public visitable
         /**
          * Add an item to existing @ref inv_search_caches that it meets the criteria for. Will NOT create any new caches.
          */
-        void add_to_inv_search_caches( item &it ) const;
+        void add_to_inv_search_caches( const item_location &it ) const;
 
         bool has_charges( const itype_id &it, int quantity,
                           const std::function<bool( const item & )> &filter = return_true<item> ) const override;
@@ -3168,6 +3154,8 @@ class Character : public Creature, public visitable
         bool has_activity( const activity_id &type ) const;
         /** Check if player currently has any of the given activities */
         bool has_activity( const std::vector<activity_id> &types ) const;
+        /** Process activity until activity invalid or character is out of moves */
+        void process_activity();
         /** Check if character has a given sub_bodypart */
         bool has_sub_bodypart( const sub_bodypart_id &sbp ) const;
         void resume_backlog_activity();
@@ -3351,7 +3339,7 @@ class Character : public Creature, public visitable
         /** Called when an item is washed */
         void on_worn_item_washed( const item &it );
         /** Called when an item is acquired (picked up, worn, or wielded) */
-        void on_item_acquire( const item &it );
+        void on_item_acquire( const item_location &it );
         /** Called when effect intensity has been changed */
         void on_effect_int_change( const efftype_id &eid, int intensity,
                                    const bodypart_id &bp = bodypart_str_id::NULL_ID() ) override;
@@ -3584,7 +3572,7 @@ class Character : public Creature, public visitable
          * the first of its contents (if it's consumable) or null item otherwise.
          * WARNING: consumable does not necessarily guarantee the comestible type.
          */
-        item &get_consumable_from( item &it ) const;
+        item_location get_consumable_from( const item_location &it ) const;
 
         /** Get calorie & vitamin contents for a comestible, taking into
          * account character traits */
@@ -3957,7 +3945,12 @@ class Character : public Creature, public visitable
         bool leak_level_dirty = true;
         // Cache if current bionic layout has certain json flag. Refreshed upon bionics add/remove, activation/deactivation.
         mutable std::map<const json_character_flag, bool> bio_flag_cache;
+        // this is a temporary member, meant to facilitate items that can't be added on load,
+        // to be created on the first game turn.
+        std::list<item> temporary_load_items;
     public:
+        void add_temporary_load_items();
+        void stash_temporary_load_item( const item &it );
         float get_leak_level() const;
         /** Iterate through the character inventory to get its leak level */
         void calculate_leak_level();
@@ -4074,9 +4067,13 @@ class Character : public Creature, public visitable
             const quality_id &qual, int level ) const;
         // No item walk, unlike has_quality.
         bool has_intrinsic_quality( const quality_id &qual, int level = 1, int qty = 1 ) const;
+        // Automation's pair: planning and selection measure the same way, so a plan
+        // that passes is one the selector can act on.
+        bool has_unreserved_quality( const quality_id &qual, int level = 1, int qty = 1 ) const;
+        item &best_unreserved_item_with_quality( const quality_id &qid );
         int max_quality( const quality_id &qual ) const override;
         int max_quality( const quality_id &qual, int radius ) const;
-        VisitResponse visit_items( const std::function<VisitResponse( item *, item * )> &func ) const
+        VisitResponse visit_items( const std::function<VisitResponse( const item_location & )> &func ) const
         override;
         std::list<item> remove_items_with( const std::function<bool( const item & )> &filter,
                                            int count = INT_MAX ) override;
@@ -4370,6 +4367,8 @@ class Character : public Creature, public visitable
             int moves;
             tripoint_bub_ms position;
             int radius;
+            // cache built earlier in the turn can't see a later acquire or release
+            uint64_t reservation_generation = 0;
             pimpl<temp_crafting_inventory> crafting_inventory;
         };
         mutable crafting_cache_type crafting_cache;

@@ -52,7 +52,6 @@
 #include "handle_liquid.h"
 #include "input_popup.h"
 #include "iexamine.h"
-#include "inventory.h"
 #include "item.h"
 #include "item_components.h"
 #include "item_location.h"
@@ -692,11 +691,13 @@ const temp_crafting_inventory &Character::crafting_inventory( map *here,
     if( src_pos == tripoint_bub_ms::zero ) {
         inv_pos = pos_bub( *here );
     }
+    const uint64_t reservation_generation = get_craft_reservations().generation();
     if( crafting_cache.valid
         && moves == crafting_cache.moves
         && radius == crafting_cache.radius
         && calendar::turn == crafting_cache.time
         && inv_pos == crafting_cache.position
+        && reservation_generation == crafting_cache.reservation_generation
       ) {
         return *crafting_cache.crafting_inventory;
     }
@@ -708,7 +709,11 @@ const temp_crafting_inventory &Character::crafting_inventory( map *here,
     std::map<itype_id, int> tmp_liq_list;
 
     visit_items(
-    [&]( item * it, item * ) {
+    [&]( const item_location & it ) {
+        // Only roots: a reserved provider takes the container carrying it along.
+        if( !it.has_parent() && craft_reservation::contains_reserved( *it ) ) {
+            return VisitResponse::SKIP;
+        }
         if( !it->empty_container() ) {
             // is the non-empty container used for BOIL?
             if( !it->is_watertight_container() || it->get_quality( qual_BOIL, false ) <= 0 ) {
@@ -734,6 +739,7 @@ const temp_crafting_inventory &Character::crafting_inventory( map *here,
     }
 
     crafting_cache.valid = true;
+    crafting_cache.reservation_generation = reservation_generation;
     crafting_cache.moves = moves;
     crafting_cache.time = calendar::turn;
     crafting_cache.position = inv_pos;
@@ -817,7 +823,9 @@ static item_location set_item_inventory( Character &p, item &newit )
     if( newit.made_of( phase_id::LIQUID ) ) {
         liquid_handler::handle_all_or_npc_liquid( p, newit, PICKUP_RANGE );
     } else {
-        p.inv->assign_empty_invlet( newit, p );
+        if( p.is_avatar() ) {
+            p.as_avatar()->assign_empty_invlet( newit );
+        }
         // We might not have space for the item
         if( !p.can_pickVolume( newit ) ) { //Accounts for result_mult
             put_into_vehicle_or_drop( p, item_drop_reason::too_large, { newit } );
@@ -1452,14 +1460,14 @@ static std::vector<provider_candidate> enumerate_admitted_providers(
     const std::vector<tripoint_bub_ms> reachable =
         m.reachable_flood_steps( src.origin, src.radius, 1, 100 );
 
-    const auto admit_tree = [&out]( const item & root, bool carried ) {
-        const int64_t root_uid = root.uid().get_value();
-        root.visit_items( [&out, root_uid, carried]( const item * node, const item * parent ) {
+    const auto admit_tree = [&out]( item_location root, bool carried ) {
+        const int64_t root_uid = root->uid().get_value();
+        root.visit_items( [&out, root_uid, carried]( item_location node ) {
             provider_candidate cand;
             cand.kind = craft_reservation::provider_kind::item;
-            cand.it = node;
+            cand.it = node.get_item();
             cand.provider_uid = node->uid().get_value();
-            cand.nested = parent != nullptr;
+            cand.nested = node.has_parent();
             cand.root_uid = root_uid;
             cand.carried = carried;
             out.push_back( cand );
@@ -1481,14 +1489,14 @@ static std::vector<provider_candidate> enumerate_admitted_providers(
             if( stack_item.made_of( phase_id::LIQUID ) ) {
                 continue;
             }
-            admit_tree( stack_item, false );
+            admit_tree( item_location( map_cursor( p ), const_cast<item *>( &stack_item ) ), false );
         }
     }
 
     if( src.present_char != nullptr ) {
         for( const item_location &carried : src.present_char->all_items_loc() ) {
             if( carried && carried.parent_item() == item_location::nowhere ) {
-                admit_tree( *carried, true );
+                admit_tree( carried, true );
             }
         }
     }
@@ -1498,7 +1506,8 @@ static std::vector<provider_candidate> enumerate_admitted_providers(
         if( const std::optional<vpart_reference> vp = m.veh_at( p ).cargo() ) {
             for( const item &it : vp->items() ) {
                 if( !it.made_of( phase_id::LIQUID ) ) {
-                    admit_tree( it, false );
+                    admit_tree( item_location( vehicle_cursor( vp->vehicle(), vp->part_index() ),
+                                               const_cast<item *>( &it ) ), false );
                 }
             }
         }
@@ -2344,8 +2353,8 @@ void craft_relocated( const item_location &landed )
         root = root.parent_item();
     }
 
-    std::vector<item *> crafts;
-    root->visit_items( [&crafts]( item * node, item * ) {
+    std::vector<item_location> crafts;
+    root.visit_items( [&crafts]( item_location node ) {
         if( node->is_craft() &&
             node->get_passive_started_at() != calendar::before_time_starts ) {
             crafts.push_back( node );
@@ -2356,20 +2365,17 @@ void craft_relocated( const item_location &landed )
         return;
     }
 
-    for( item *craft : crafts ) {
-        const item_location craft_loc = craft == root.get_item()
-                                        ? root
-                                        : item_location( root, craft );
-        craft->set_reserved_tile( craft_site_tile( craft_loc ) );
+    for( item_location &craft : crafts ) {
+        craft->set_reserved_tile( craft_site_tile( craft ) );
         // A craft that had nothing to poll for gains a site lock when dropped, and the
         // lease needs a poll to refresh it.
         if( craft->get_reserved_tile() &&
             craft->get_env_check_at() == calendar::before_time_starts ) {
             craft->set_env_check_at( calendar::turn + 1_minutes );
         }
-        get_item_wakeups().rebuild_for_item( craft_loc );
+        get_item_wakeups().rebuild_for_item( craft );
         if( craft->peek_reservation_owner_token() != 0 ) {
-            get_craft_reservations().rebuild_for_craft( craft_loc );
+            get_craft_reservations().rebuild_for_craft( craft );
         }
     }
 }
@@ -3777,7 +3783,6 @@ void Character::complete_craft( item &craft, const std::optional<tripoint_bub_ms
 
     recoil = MAX_RECOIL;
 
-    inv->restack( *this );
     // Positive morale bonuses only happen on completion, to avoid the player repeatedly re-crafting to spam morale
     making.apply_positive_morale_mods( *this );
 
@@ -4367,10 +4372,15 @@ std::list<item> Character::consume_items( map &m, const comp_selection<item_comp
         const std::vector<tripoint_bub_ms> &reachable_pts,
         bool select_ind, bool disable_preference )
 {
-    std::function<bool( const item & )> active_preferred_filter = [&filter]( const item & it ) {
-        return filter( it ) && is_preferred_component( it );
+    // Selection stores itype_id, and consumption re-resolves it. So a free instance
+    // could be cleared and a reserved one destroyed in its place.
+    std::function<bool( const item & )> unreserved = [&filter]( const item & it ) {
+        return filter( it ) && unreserved_filter( it );
     };
-    std::function<bool( const item & )> preferred_filter = disable_preference ? filter :
+    std::function<bool( const item & )> active_preferred_filter = [&unreserved]( const item & it ) {
+        return unreserved( it ) && is_preferred_component( it );
+    };
+    std::function<bool( const item & )> preferred_filter = disable_preference ? unreserved :
             active_preferred_filter;
 
     std::list<item> ret;
@@ -4744,16 +4754,9 @@ static int step_buckets_for_fraction( double f )
 bool Character::consume_step_tool_targets( item &craft, const std::vector<int> &targets,
         const tripoint_bub_ms &origin, int radius, bool pin_to_map )
 {
+    const craft_reservation::scoped_own_claims own_claims( craft );
     std::vector<std::vector<step_tool_alloc>> allocs = craft.get_step_tool_allocs();
 
-    struct pending_debit {
-        comp_selection<tool_comp> sel;
-        usage_from eff_use = usage_from::none;
-        int units = 0;
-        int step_idx = 0;
-        int alloc_idx = 0;
-        int new_count = 0;
-    };
     // A selected non-charged tool drains nothing but must still be present, or
     // the step would advance free using a tool the crafter no longer has.
     struct pending_presence {
@@ -5116,14 +5119,14 @@ void Character::consume_tools( map &m, const comp_selection<tool_comp> &tool, in
     const itype *tmp = item::find_type( tool.comp.type );
     int quantity = tool.comp.count * batch * tmp->charge_factor();
     if( tool.use_from == usage_from::both ) {
-        use_charges( tool.comp.type, quantity, radius );
+        use_charges( tool.comp.type, quantity, radius, unreserved_filter );
     } else if( tool.use_from == usage_from::player ) {
-        use_charges( tool.comp.type, quantity );
+        use_charges( tool.comp.type, quantity, unreserved_filter );
     } else if( tool.use_from == usage_from::map ) {
-        m.use_charges( origin, radius, tool.comp.type, quantity, return_true<item>, bcp );
+        m.use_charges( origin, radius, tool.comp.type, quantity, unreserved_filter, bcp );
         // Map::use_charges() does not handle UPS charges.
         if( quantity > 0 ) {
-            use_charges( tool.comp.type, quantity, radius );
+            use_charges( tool.comp.type, quantity, radius, unreserved_filter );
         }
     }
 
@@ -5140,10 +5143,10 @@ void Character::consume_tools( map &m, const comp_selection<tool_comp> &tool, in
     int quantity = tool.comp.count * batch * tmp->charge_factor();
 
     if( tool.use_from == usage_from::player || tool.use_from == usage_from::both ) {
-        use_charges( tool.comp.type, quantity );
+        use_charges( tool.comp.type, quantity, unreserved_filter );
     }
     if( tool.use_from == usage_from::map || tool.use_from == usage_from::both ) {
-        m.use_charges( reachable_pts, tool.comp.type, quantity, return_true<item>, bcp );
+        m.use_charges( reachable_pts, tool.comp.type, quantity, unreserved_filter, bcp );
         // Map::use_charges() does not handle UPS charges.
         if( quantity > 0 ) {
             m.consume_ups( reachable_pts, units::from_kilojoule( static_cast<std::int64_t>( quantity ) ) );
@@ -5709,7 +5712,7 @@ void drop_or_handle( const item &newit, Character &p )
 
 void remove_ammo( item &dis_item, Character &p )
 {
-    dis_item.remove_items_with( [&p]( const item & it ) {
+    item_location( p, &dis_item ).remove_items_with( [&p]( const item & it ) {
         if( it.is_irremovable() || !( it.is_gunmod() || it.is_toolmod() || ( it.is_magazine() &&
                                       !it.is_tool() ) ) ) {
             return false;
@@ -5779,9 +5782,9 @@ item_location npc::get_item_to_craft()
 {
     // check inventory
     item_location to_craft;
-    visit_items( [ this, &to_craft ]( item * itm, item * ) {
+    visit_items( [this, &to_craft]( item_location itm ) {
         if( itm->get_var( "crafter", "" ) == name ) {
-            to_craft = item_location( *this, itm );
+            to_craft = itm;
             if( !is_anyone_crafting( to_craft, this ) ) {
                 return VisitResponse::ABORT;
             }
@@ -5825,11 +5828,10 @@ void npc::do_npc_craft( const std::optional<tripoint_bub_ms> &loc, const recipe_
     std::vector<item_location> craft_item_list;
     std::string dummy;
 
-    visit_items( [ this, &craft_item_list, &dummy ]( item * itm, item * ) {
+    visit_items( [ this, &craft_item_list, &dummy ]( const item_location & itm ) {
         if( itm->is_craft() && itm->get_making().npc_can_craft( dummy ) ) {
-            item_location to_craft = item_location( *this, itm );
-            if( !is_anyone_crafting( to_craft, this ) ) {
-                craft_item_list.push_back( to_craft );
+            if( !is_anyone_crafting( itm, this ) ) {
+                craft_item_list.push_back( itm );
             }
         }
         return VisitResponse::NEXT;

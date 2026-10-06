@@ -812,8 +812,6 @@ bool game::start_game()
 
     // Make sure the items are added after the calendar is started
     u.add_profession_items();
-    // Move items from the raw inventory to item_location s. See header TODO.
-    u.migrate_items_to_storage( true );
 
     const start_location &start_loc = u.random_start_location ? scen->random_start_location().obj() :
                                       u.start_location.obj();
@@ -866,7 +864,7 @@ bool game::start_game()
     start_loc.place_player( u, omtstart );
     // Set spawn location for starting items (maps need it to be readable)
     const tripoint_abs_ms player_pos = u.pos_abs();
-    u.visit_items( [&player_pos]( item * it, item * ) {
+    u.visit_items( [&player_pos]( item_location it ) {
         it->preserve_location( player_pos );
         return VisitResponse::NEXT;
     } );
@@ -1953,11 +1951,11 @@ static void view_recipe_crafting_menu( const item &it )
     you.craft( std::nullopt, recipe_id(), filterstring );
 }
 
-static hint_rating rate_action_eat( const avatar &you, const item &it )
+static hint_rating rate_action_eat( const avatar &you, const item_location &it )
 {
-    if( it.is_container() ) {
+    if( it->is_container() ) {
         hint_rating best_rate = hint_rating::cant;
-        it.visit_items( [&you, &best_rate]( item * node, item * ) {
+        it.visit_items( [&you, &best_rate]( item_location node ) {
             if( you.can_consume_as_is( *node ) )  {
                 ret_val<edible_rating> rate = you.will_eat( *node );
                 if( rate.success() ) {
@@ -1972,11 +1970,11 @@ static hint_rating rate_action_eat( const avatar &you, const item &it )
         return best_rate;
     }
 
-    if( !you.can_consume_as_is( it ) ) {
+    if( !you.can_consume_as_is( *it ) ) {
         return hint_rating::cant;
     }
 
-    const auto rating = you.will_eat( it );
+    const auto rating = you.will_eat( *it );
     if( rating.success() ) {
         return hint_rating::good;
     } else if( rating.value() == INEDIBLE || rating.value() == INEDIBLE_MUTATION ) {
@@ -2168,7 +2166,7 @@ int game::inventory_item_menu( item_location locThisItem,
                 };
                 addentry( 'a', pgettext( "action", "activate" ), rate_action_use( u, oThisItem ) );
                 addentry( 'R', pgettext( "action", "read" ), rate_action_read( u, oThisItem ) );
-                addentry( 'E', pgettext( "action", "eat" ), rate_action_eat( u, oThisItem ) );
+                addentry( 'E', pgettext( "action", "eat" ), rate_action_eat( u, locThisItem ) );
                 addentry( 'W', pgettext( "action", "wear" ), rate_action_wear( u, oThisItem ) );
                 addentry( 'w', pgettext( "action", "wield" ), rate_action_wield( u, oThisItem ) );
                 addentry( 't', pgettext( "action", "throw" ), rate_action_wield( u, oThisItem ) );
@@ -4955,7 +4953,7 @@ bool game::revive_corpse( const tripoint_bub_ms &p, item &it, int radius )
         newmon_ptr = make_shared_fast<monster>( it.get_mtype()->id );
     }
     monster &critter = *newmon_ptr;
-    critter.init_from_item( it );
+    critter.init_from_item( item_location( map_cursor( p ), &it ) );
     if( critter.get_hp() < 1 ) {
         // Failed reanimation due to corpse being too burned
         return false;
@@ -8510,6 +8508,7 @@ void game::place_player_overmap( const tripoint_abs_omt &om_dest, bool move_play
     here.rebuild_vehicle_level_caches();
     here.access_cache( here.get_abs_sub().z() ).map_memory_cache_dec.reset();
     here.access_cache( here.get_abs_sub().z() ).map_memory_cache_ter.reset();
+    here.access_cache( here.get_abs_sub().z() ).map_memory_sweep_pending = true;
     // offset because load_map expects the coordinates of the top left corner, but the
     // player will be centered in the middle of the map.
     const tripoint_abs_sm map_sm_pos =
@@ -9045,7 +9044,7 @@ void game::on_move_effects()
 void game::on_options_changed()
 {
 #if defined(TILES)
-    tilecontext->on_options_changed();
+    on_tiles_options_changed();
 #endif
     refresh_mouse_config();
 }
@@ -9833,6 +9832,9 @@ bool game::travel_to_dimension( dimension_id dimension_destination,
     // so i'm using 'default' as empty/main dimension
     dimension_id previous_dimension = dimension_prefix;
     dimension_prefix = dimension_destination;
+
+    // Reset the overmap first before loading the dimension data
+    overmap_buffer.clear();
     // Load in data specific to the dimension (like weather)
     load_dimension_data();
 
@@ -9841,11 +9843,11 @@ bool game::travel_to_dimension( dimension_id dimension_destination,
     // hack to prevent crashes from temperature checks
     // This returns to false in 'on_turn()' so it should be fine?
     swapping_dimensions = true;
-    // Clear the overmap
-    overmap_buffer.clear();
-    overmap_buffer.init_region_layout();
+
     // load/create new overmap
+    overmap_buffer.init_region_layout();
     overmap &new_om = overmap_buffer.get( project_to<coords::om>( player.pos_abs().xy() ) );
+
     // insert travelled NPCs
     for( const npc_ptr &guy : moving_npcs ) {
         new_om.insert_npc( guy );

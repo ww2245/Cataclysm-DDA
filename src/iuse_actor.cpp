@@ -174,6 +174,7 @@ static const skill_id skill_traps( "traps" );
 static const trait_id trait_DEBUG_BIONICS( "DEBUG_BIONICS" );
 static const trait_id trait_ILLITERATE( "ILLITERATE" );
 static const trait_id trait_LIGHTWEIGHT( "LIGHTWEIGHT" );
+static const trait_id trait_SORCERER( "SORCERER" );
 static const trait_id trait_TOLERANCE( "TOLERANCE" );
 
 static const trap_str_id tr_firewood_source( "tr_firewood_source" );
@@ -194,17 +195,6 @@ item_location form_loc_recursive( T &loc, item &it )
 //explict template instantiation
 template item_location form_loc_recursive<Character>( Character &loc, item &it );
 template item_location form_loc_recursive<npc>( npc &loc, item &it );
-
-template<>
-item_location form_loc_recursive( item_location &loc, item &it )
-{
-    item *parent = loc->find_parent( it );
-    if( parent != nullptr ) {
-        return item_location( form_loc_recursive( loc, *parent ), &it );
-    }
-
-    return item_location( loc, &it );
-}
 
 static std::optional<item_location> try_form_loc( Character &you, map *here,
         const tripoint_bub_ms &p, item &it )
@@ -1060,7 +1050,7 @@ std::optional<int> place_monster_iuse::use( Character *p, item &it, map *here,
 
     shared_ptr_fast<monster> newmon_ptr = make_shared_fast<monster>( mtypeid );
     monster &newmon = *newmon_ptr;
-    newmon.init_from_item( it );
+    newmon.init_from_item( item_location( *p, &it ) );
     if( place_randomly ) {
         // place_critter_around returns the same pointer as its parameter (or null)
         if( !g->place_critter_around( newmon_ptr, p->pos_bub( *here ), 1 ) ) {
@@ -1745,10 +1735,10 @@ bool firestarter_actor::npc_start_fire( npc &who, item &tool,
         // Search inventory and adjacent tiles (same scope as the
         // tinder picker in fire_start_activity_actor::do_turn).
         item_location tinder;
-        who.visit_items( [&tinder, &who]( item * it, item * ) -> VisitResponse {
+        who.visit_items( [&tinder]( item_location it ) -> VisitResponse {
             if( it->has_flag( flag_TINDER ) )
             {
-                tinder = item_location( who, it );
+                tinder = it;
                 return VisitResponse::ABORT;
             }
             return VisitResponse::NEXT;
@@ -1985,11 +1975,13 @@ static std::optional<recipe> find_uncraft_recipe( const item &x )
     return std::nullopt;
 }
 
-void salvage_actor::cut_up( Character &p, item_location &cut ) const
+std::map<itype_id, int> salvage_actor::salvage_results( item_location cut, double efficiency )
 {
-    map &here = get_map();
+    if( efficiency > 1.0 ) {
+        debugmsg( "Salvaging for more materials than exists in item.  Salvage eff %f%% item %s",
+                  efficiency * 100.0, cut.get_item()->tname() );
+    }
 
-    // Map of salvaged items (id, count)
     std::map<itype_id, int> salvage;
     std::map<material_id, units::mass> mat_to_weight;
     std::set<material_id> mat_set;
@@ -1997,24 +1989,6 @@ void salvage_actor::cut_up( Character &p, item_location &cut ) const
         mat_set.insert( mat.first );
     }
 
-    // Calculate efficiency losses
-    float efficiency = 1.0;
-    // Higher fabrication, less chance of entropy, but still a chance.
-    /** @EFFECT_FABRICATION reduces chance of losing components when cutting items up */
-    int entropy_threshold = std::max( 0,
-                                      5 - static_cast<int>( round( p.get_skill_level( skill_fabrication ) ) ) );
-    if( rng( 1, 10 ) <= entropy_threshold ) {
-        efficiency *= 0.9;
-    }
-
-    // Fail dex roll, potentially lose more parts.
-    /** @EFFECT_DEX randomly reduces component loss when cutting items up */
-    if( dice( 3, 4 ) > p.get_dex() ) {
-        efficiency *= 0.95;
-    }
-
-    // If the item being cut is damaged, additional losses will be incurred.
-    efficiency *= std::pow( 0.8, cut.get_item()->damage_level() );
 
     auto distribute_uniformly = [&mat_to_weight]( const item & x, float num_adjusted ) -> void {
         for( const auto &type : x.made_of() )
@@ -2099,15 +2073,43 @@ void salvage_actor::cut_up( Character &p, item_location &cut ) const
     // Decompose the item into irreducible parts
     cut_up_component( *cut.get_item(), efficiency );
 
-    // Not much practice, and you won't get very far ripping things up.
-    p.practice( skill_fabrication, rng( 0, 5 ), 1 );
-
     // Add the uniformly distributed mass to the relevant salvage items
     for( const auto &iter : mat_to_weight ) {
         if( const std::optional<itype_id> id = iter.first->salvaged_into() ) {
             salvage[*id] += iter.second / id->obj().weight;
         }
     }
+
+    return salvage;
+}
+
+void salvage_actor::cut_up( Character &p, item_location &cut ) const
+{
+    map &here = get_map();
+
+    // Calculate efficiency losses
+    float efficiency = 1.0;
+    // Higher fabrication, less chance of entropy, but still a chance.
+    /** @EFFECT_FABRICATION reduces chance of losing components when cutting items up */
+    int entropy_threshold = std::max( 0,
+                                      5 - static_cast<int>( round( p.get_skill_level( skill_fabrication ) ) ) );
+    if( rng( 1, 10 ) <= entropy_threshold ) {
+        efficiency *= 0.9;
+    }
+
+    // Fail dex roll, potentially lose more parts.
+    /** @EFFECT_DEX randomly reduces component loss when cutting items up */
+    if( dice( 3, 4 ) > p.get_dex() ) {
+        efficiency *= 0.95;
+    }
+
+    // If the item being cut is damaged, additional losses will be incurred.
+    efficiency *= std::pow( 0.8, cut.get_item()->damage_level() );
+
+    // Not much practice, and you won't get very far ripping things up.
+    p.practice( skill_fabrication, rng( 0, 5 ), 1 );
+
+    std::map<itype_id, int> salvage = salvage_results( cut, efficiency );
 
     add_msg( m_info, _( "You try to salvage materials from the %s." ),
              cut.get_item()->tname() );
@@ -2731,6 +2733,10 @@ std::optional<int> learn_spell_actor::use( Character *p, item &, map *,
     }
     if( p->has_trait( trait_ILLITERATE ) ) {
         p->add_msg_if_player( m_bad, _( "You can't read." ) );
+        return std::nullopt;
+    }
+    if( p->has_trait( trait_SORCERER ) ) {
+        p->add_msg_if_player( m_bad, _( "Sorcerers cannot learn spells from books or scrolls." ) );
         return std::nullopt;
     }
     if( !p->has_morale_to_read() ) {
@@ -4696,7 +4702,7 @@ std::optional<int> detach_gunmods_actor::use( Character *p, item &it,
     }
 
     if( mod_index >= 0 ) {
-        gun_copy.remove_item( *mods_copy[mod_index] );
+        item_location( *p, &gun_copy ).remove_item( *mods_copy[mod_index] );
 
         if( p->meets_requirements( *mods[mod_index], gun_copy ) ||
             query_yn( _( "Are you sure?  You may be lacking the skills needed to reattach this modification." ) ) ) {
