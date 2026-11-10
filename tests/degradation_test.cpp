@@ -1,9 +1,11 @@
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "activity_handlers.h"
+#include "activity_actor_definitions.h"
 #include "calendar.h"
 #include "cata_catch.h"
 #include "character.h"
@@ -14,19 +16,17 @@
 #include "item_location.h"
 #include "itype.h"
 #include "iuse.h"
+#include "iuse_actor.h"
 #include "map.h"
 #include "map_helpers.h"
 #include "map_helpers_tests.h"
 #include "map_scale_constants.h"
 #include "map_selector.h"
-#include "player_activity.h"
 #include "player_helpers.h"
 #include "pocket_type.h"
 #include "point.h"
 #include "ret_val.h"
 #include "type_id.h"
-
-static const activity_id ACT_REPAIR_ITEM( "ACT_REPAIR_ITEM" );
 
 static const itype_id itype_backpack( "backpack" );
 static const itype_id itype_can_drink( "can_drink" );
@@ -38,6 +38,7 @@ static const itype_id itype_test_baseball( "test_baseball" );
 static const itype_id itype_test_baseball_half_degradation( "test_baseball_half_degradation" );
 static const itype_id itype_test_baseball_x2_degradation( "test_baseball_x2_degradation" );
 static const itype_id itype_test_glock_degrade( "test_glock_degrade" );
+static const itype_id itype_test_pipe( "test_pipe" );
 static const itype_id itype_test_steelball( "test_steelball" );
 static const itype_id itype_thread( "thread" );
 
@@ -46,6 +47,13 @@ static const skill_id skill_tailor( "tailor" );
 
 static constexpr int max_iters = 4000;
 static constexpr tripoint_bub_ms spawn_pos( HALF_MAPSIZE_X - 1, HALF_MAPSIZE_Y, 0 );
+
+
+static void setup_repair_activity( Character &who, item_location &tailorloc, item_location &fixloc )
+{
+    who.assign_activity( repair_item_activity_actor( fixloc, tailorloc,
+                         std::nullopt, "repair_fabric", repair_stage::FULL, true ) );
+}
 
 static float get_avg_degradation( const itype_id &it, int count, int damage )
 {
@@ -248,7 +256,7 @@ static item_location setup_tailorkit( Character &u )
     return item_location( map_cursor( pos ), &tailor );
 }
 
-static void setup_repair( item &fix, player_activity &act, Character &u )
+static void setup_repair( item &fix, Character &u )
 {
     // Setup character
     clear_character( u, true );
@@ -266,10 +274,7 @@ static void setup_repair( item &fix, player_activity &act, Character &u )
 
     // Setup activity
     item_location fixloc( u, &fix );
-    act.values.emplace_back( /* repeat_type::FULL */ 3 );
-    act.str_values.emplace_back( "repair_fabric" );
-    act.targets.emplace_back( tailorloc );
-    act.targets.emplace_back( fixloc );
+    setup_repair_activity( u, tailorloc, fixloc );
 }
 
 // Testing activity_handlers::repair_item_finish / repair_item_actor::repair
@@ -291,11 +296,8 @@ TEST_CASE( "Repairing_degraded_items", "[item][degradation]" )
             REQUIRE( fix.degradation() == 0 );
 
             THEN( "Repaired to 0 damage" ) {
-                player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-                setup_repair( fix, act, u );
-                while( !act.is_null() ) {
-                    ::repair_item_finish( &act, &u, true );
-                }
+                setup_repair( fix, u );
+                u.process_activity_until_invalid();
                 CHECK( fix.damage() == 0 );
             }
         }
@@ -307,11 +309,8 @@ TEST_CASE( "Repairing_degraded_items", "[item][degradation]" )
             REQUIRE( fix.degradation() == 0 );
 
             THEN( "Repaired to 0 damage" ) {
-                player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-                setup_repair( fix, act, u );
-                while( !act.is_null() ) {
-                    ::repair_item_finish( &act, &u, true );
-                }
+                setup_repair( fix, u );
+                u.process_activity_until_invalid();
                 CHECK( fix.damage() == 0 );
             }
         }
@@ -323,11 +322,8 @@ TEST_CASE( "Repairing_degraded_items", "[item][degradation]" )
             REQUIRE( fix.degradation() == 1000 );
 
             THEN( "Can't repair to less than 1000 damage due to degradation" ) {
-                player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-                setup_repair( fix, act, u );
-                while( !act.is_null() ) {
-                    ::repair_item_finish( &act, &u, true );
-                }
+                setup_repair( fix, u );
+                u.process_activity_until_invalid();
                 CHECK( fix.damage() == 1000 );
             }
         }
@@ -339,11 +335,8 @@ TEST_CASE( "Repairing_degraded_items", "[item][degradation]" )
             REQUIRE( fix.degradation() == 1000 );
 
             THEN( "Repaired to 0 damage" ) {
-                player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-                setup_repair( fix, act, u );
-                while( !act.is_null() ) {
-                    ::repair_item_finish( &act, &u, true );
-                }
+                setup_repair( fix, u );
+                u.process_activity_until_invalid();
                 CHECK( fix.damage() == 1000 );
             }
         }
@@ -355,11 +348,8 @@ TEST_CASE( "Repairing_degraded_items", "[item][degradation]" )
             REQUIRE( fix.degradation() == 2000 );
 
             THEN( "Can't repair to less than 2000 damage due to degradation" ) {
-                player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-                setup_repair( fix, act, u );
-                while( !act.is_null() ) {
-                    ::repair_item_finish( &act, &u, true );
-                }
+                setup_repair( fix, u );
+                u.process_activity_until_invalid();
                 CHECK( fix.damage() == 2000 );
             }
         }
@@ -371,11 +361,8 @@ TEST_CASE( "Repairing_degraded_items", "[item][degradation]" )
             REQUIRE( fix.degradation() == 2000 );
 
             THEN( "Repaired to 2000 damage" ) {
-                player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-                setup_repair( fix, act, u );
-                while( !act.is_null() ) {
-                    ::repair_item_finish( &act, &u, true );
-                }
+                setup_repair( fix, u );
+                u.process_activity_until_invalid();
                 CHECK( fix.damage() == 2000 );
             }
         }
@@ -387,11 +374,8 @@ TEST_CASE( "Repairing_degraded_items", "[item][degradation]" )
             REQUIRE( fix.degradation() == 3000 );
 
             THEN( "Can't repair to less than 3000 damage due to degradation" ) {
-                player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-                setup_repair( fix, act, u );
-                while( !act.is_null() ) {
-                    ::repair_item_finish( &act, &u, true );
-                }
+                setup_repair( fix, u );
+                u.process_activity_until_invalid();
                 CHECK( fix.damage() == 3000 );
             }
         }
@@ -403,11 +387,8 @@ TEST_CASE( "Repairing_degraded_items", "[item][degradation]" )
             REQUIRE( fix.degradation() == 3000 );
 
             THEN( "Repaired to 3000 damage" ) {
-                player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-                setup_repair( fix, act, u );
-                while( !act.is_null() ) {
-                    ::repair_item_finish( &act, &u, true );
-                }
+                setup_repair( fix, u );
+                u.process_activity_until_invalid();
                 CHECK( fix.damage() == 3000 );
             }
         }
@@ -419,11 +400,8 @@ TEST_CASE( "Repairing_degraded_items", "[item][degradation]" )
             REQUIRE( fix.degradation() == 4000 );
 
             THEN( "Can't repair to less than 4000 damage due to degradation" ) {
-                player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-                setup_repair( fix, act, u );
-                while( !act.is_null() ) {
-                    ::repair_item_finish( &act, &u, true );
-                }
+                setup_repair( fix, u );
+                u.process_activity_until_invalid();
                 CHECK( fix.damage() == 4000 );
             }
         }
@@ -442,11 +420,8 @@ TEST_CASE( "Repairing_items_with_specific_requirements", "[item][degradation]" )
     REQUIRE( fix.degradation() == 0 );
 
     THEN( "Try repairing and fail" ) {
-        player_activity act( ACT_REPAIR_ITEM, 0, 0 );
-        setup_repair( fix, act, u );
-        while( !act.is_null() ) {
-            ::repair_item_finish( &act, &u, true );
-        }
+        setup_repair( fix, u );
+        u.process_activity_until_invalid();
 
         // shouldn't repair since the sewing kit can't repair steel ball
         CHECK( fix.damage() == 1000 );
@@ -649,16 +624,6 @@ TEST_CASE( "Gun_repair_with_degradation", "[item][degradation]" )
     }
 }
 
-static player_activity setup_repair_activity( item_location &tailorloc, item_location &fixloc )
-{
-    player_activity act( ACT_REPAIR_ITEM );
-    act.values.emplace_back( /* repeat_type::FULL */ 3 );
-    act.str_values.emplace_back( "repair_fabric" );
-    act.targets.emplace_back( tailorloc );
-    act.targets.emplace_back( fixloc );
-    return act;
-}
-
 static item_location put_in_container( item_location &container, const itype_id &type )
 {
     ret_val<item *> inserted = container->get_contents().insert_item( item( type ),
@@ -697,10 +662,8 @@ TEST_CASE( "refit_item_inside_spillable_container", "[item][repair][container]" 
         item_location fix_tshirt = put_in_container( aluminum_can, itype_technician_shirt_gray );
         WHEN( "Refitting tshirt inside spillable container" ) {
             REQUIRE_FALSE( fix_tshirt->has_flag( flag_FIT ) );
-            player_activity act = setup_repair_activity( tailorkit, fix_tshirt );
-            while( !act.is_null() ) {
-                ::repair_item_finish( &act, &u, true );
-            }
+            setup_repair_activity( u, tailorkit, fix_tshirt );
+            u.process_activity_until_invalid();
             THEN( "tshirt should be refitted successfully" ) {
                 const item *refitted_tshirt = backpack->get_item_with( [&]( const item & i ) {
                     return i.typeId() == itype_technician_shirt_gray;
@@ -710,5 +673,39 @@ TEST_CASE( "refit_item_inside_spillable_container", "[item][repair][container]" 
             }
         }
 
+    }
+}
+
+TEST_CASE( "repair_target_check_without_consumption_ignores_material_availability",
+           "[item][repair]" )
+{
+    clear_avatar();
+    clear_map_without_vision();
+    Character &u = get_player_character();
+    const repair_item_actor *actor = dynamic_cast<const repair_item_actor *>(
+                                         itype_tailors_kit->get_use( "repair_fabric" )->get_actor_ptr() );
+    REQUIRE( actor != nullptr );
+    item fix( itype_test_baseball );
+    fix.set_damage( 1000 );
+    REQUIRE( fix.damage() > fix.degradation() );
+
+    GIVEN( "no leather in reach" ) {
+        u.invalidate_crafting_inventory();
+        THEN( "bare check accepts target, material check refuses" ) {
+            CHECK( actor->can_repair_target( u, fix, false, false ) );
+            CHECK_FALSE( actor->can_repair_target( u, fix, false, true ) );
+        }
+    }
+    GIVEN( "damaged steel pipe, which a tailor's kit can't repair" ) {
+        item pipe( itype_test_pipe );
+        pipe.set_damage( 1000 );
+        REQUIRE( pipe.damage() > pipe.degradation() );
+        item leather( itype_leather );
+        u.i_add_or_drop( leather, 10 );
+        u.invalidate_crafting_inventory();
+        THEN( "even bare check refuses it" ) {
+            CHECK_FALSE( actor->can_repair_target( u, pipe, false, false ) );
+            CHECK_FALSE( actor->can_repair_target( u, pipe, false, true ) );
+        }
     }
 }

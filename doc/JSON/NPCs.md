@@ -58,7 +58,6 @@ Format:
   "carry_override": "NC_EXAMPLE_carried",                                  // Optional. Defines an item group that replaces their carried items (in pockets, etc). Items which cannot
                                                                            // be carried will overflow(fall to the ground) when the NPC is loaded.
   "weapon_override": "NC_EXAMPLE_weapon",                                  // Optional. Defines an item group that replaces their wielded weapon.
-  "bye_message_override": "<fuck_you>",                                    // Optional. If used, overrides the default bye message (picked from <bye> snippet) to any another custom snippet, if set to "null" will make the npc not say anything when leaving dialogue.
   "shopkeeper_item_group": [                                               // Optional. See [Shopkeeper NPC configuration](#shopkeeper-npc-configuration) below.
     { "group": "example_shopkeeper_itemgroup1" },
     { "group": "example_shopkeeper_itemgroup2", "trust": 10 },
@@ -295,6 +294,7 @@ For further information on snippets, see [New Contributor Guide: Dialogue](https
 
 ### Custom Entries
 
+Each of this line can be overriden for specific NPCs, in a format, for example, `"snip_bye": "<end_talking_bye_portal_person>",`
 Field | Default messages/snippets | Used for...
 ---|---|---
 `<acknowledged>` | `<acknowledged>` | see data/json/npcs/snippets/talk_tags_follower.json
@@ -1490,6 +1490,7 @@ _some functions support array arguments or kwargs, denoted with square brackets 
 | get_calories_daily()  |  ✅   |   ❌  | g  | Return amount of calories character consumed before, up to 30 days, in kcal. Calorie diary is something only character has, so it can't be used with NPCs. Optional kwargs:<br/>`day`: `d/v` - picks the date the value would be pulled from, from 0 to 30. Default 0, meaning amount of calories you consumed today.<br/>`type`: `s/v` - picks the data that would be pulled. Possible values are: `spent` - how much calories character spent in different activities throughout the day; `gained` - how much calories character ate that day; `ingested` - how much calories character processed that day; `total` - `gained` minus `spent`. Default is `total`;<br/><br/>Example:<br/>`"condition": { "math": [ "get_calories_daily() > 1000" ] }`<br/> `{ "math": [ "foo = get_calories_daily('type':'gained', 'day':'1')" ] }`|
 | quality( `s` / `v` )  |  ✅   |   ❌  | u, n | Return the level of a specified item tool quality. Only usable on item talkers.<br/>Argument is the quality ID. Returns the lowest integer value if the item lacks the specified quality.<br/>Optional kwargs:<br/>`strict`: `true` / `false` (default false) When true the item must be empty to have the boiling quality.<br/><br/>Example<br/>`"condition: { "math": [ " u_quality('HACK') > 0 " ] }`<br/>`{ "math": [ "_cut_quality = u_quality('CUT') " ] }`<br/>`condition: { "math": [ " u_quality('BOIL', 'strict': true ) > 0" ] }`
 | gender() |  ✅  |  ✅  | u, n | Character's current gender. (Boolean value currently. Value is 1/true for male, 0/false for female).<br/><br/>Examples:<br/>`"condition: { "math": [ " u_gender() == 1 " ] }`<br/>`{ "math": [ "u_gender() = 0" ] }` |
+| trauma() |  ✅  |  ✅  | u, n | Character's current trauma. A counter for how much trauma the character has been exposed to. Values are clamped to the range [0-1000].<br/><br/>Examples:<br/>`"condition: { "math": [ "u_trauma() == 1000 " ] }`<br/>`{ "math": [ "n_trauma() = 0" ] }` |
 
 #### List of Character and item aspects
 These can be read or written to with `val()`.

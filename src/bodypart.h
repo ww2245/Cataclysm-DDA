@@ -25,6 +25,7 @@
 #include "weighted_list.h"
 #include "wound.h"
 
+class Character;
 class Creature;
 class JsonObject;
 class JsonOut;
@@ -507,18 +508,22 @@ class bodypart
         const std::vector<wound> &get_wounds() const;
         std::vector<wound> &get_wounds();
 
-        void add_or_worsen_wound( wound_type_id wd );
-        void add_or_worsen_wound( const wound &wd );
+        void add_or_worsen_wound( wound_type_id wd, const Character *who );
+        void add_or_worsen_wound( const wound &wd, const Character *who );
 
         void add_wound( const wound &wd );
-        void add_wound( wound_type_id wd );
+        void add_wound( wound_type_id wd, const Character &who );
         bool has_wounds() const;
         bool has_wound( wound_type_id wd ) const;
         wound *get_wound( wound_type_id wd_id );
         void remove_wound( wound wd );
         void remove_wound( wound_type_id wd );
         void remove_all_wounds_of_type( wound_type_id wd );
-        void update_wounds( time_duration time_passed );
+        void update_wounds( const Character &who, time_duration time_passed );
+
+        // checks if amount of specific wounds on bodypart is not higher than `limit`
+        // return false if more than limit
+        bool is_within_wound_limit_for_bp( wound_type_id wound_id ) const;
 
         int get_hp_cur() const;
         int get_hp_max() const;

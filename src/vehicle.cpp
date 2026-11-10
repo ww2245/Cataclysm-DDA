@@ -190,6 +190,11 @@ void DefaultRemovePartHandler::removed( map *here, vehicle &veh, const int part 
     }
 
     here->dirty_vehicle_list.insert( &veh );
+    // the part's walls, shelter and floor go with it, even if it was the last;
+    // its fake copy and the shelter of its neighbors may be on other levels
+    for( const int level : veh.occupied_levels( *here ) ) {
+        here->on_vehicle_moved( level );
+    }
     here->clear_vehicle_point_from_cache( &veh, part_pos );
     here->add_vehicle_to_cache( &veh );
     here->memory_cache_dec_set_dirty( part_pos, true );
@@ -2023,7 +2028,6 @@ bool vehicle::merge_rackable_vehicle( map *here, vehicle *carry_veh,
         here->destroy_vehicle( carry_veh );
         here->dirty_vehicle_list.insert( this );
         here->set_transparency_cache_dirty( sm_pos.z() );
-        here->set_seen_cache_dirty( tripoint_bub_ms::zero );
         here->invalidate_map_cache( here->get_abs_sub().z() );
         here->rebuild_vehicle_level_caches();
     } else {
@@ -2760,7 +2764,6 @@ bool vehicle::split_vehicles( map &here,
 
         here.dirty_vehicle_list.insert( new_vehicle );
         here.set_transparency_cache_dirty( sm_pos.z() );
-        here.set_seen_cache_dirty( tripoint_bub_ms::zero );
         if( !new_labels.empty() ) {
             new_vehicle->labels = new_labels;
         }
@@ -3782,6 +3785,15 @@ tripoint_bub_ms vehicle::bub_part_pos( const map &here, const int index ) const
 tripoint_bub_ms vehicle::bub_part_pos( const map &here, const vehicle_part &pt ) const
 {
     return pos_bub( here ) + pt.precalc[0];
+}
+
+std::set<int> vehicle::occupied_levels( const map &here ) const
+{
+    std::set<int> levels;
+    for( const vehicle_part &vp : parts ) {
+        levels.insert( bub_part_pos( here, vp ).z() );
+    }
+    return levels;
 }
 
 tripoint_abs_ms vehicle::abs_part_pos( const int index ) const
@@ -5501,6 +5513,20 @@ std::vector<vehicle_part *> vehicle::lights()
     return res;
 }
 
+float vehicle::cone_light_luminance( const std::vector<vehicle_part *> &lights )
+{
+    float luminance = 0.0f;
+    float iteration = 1.0f;
+    for( const vehicle_part *pt : lights ) {
+        const vpart_info &vp = pt->info();
+        if( vp.has_flag( VPFLAG_CONE_LIGHT ) || vp.has_flag( VPFLAG_WIDE_CONE_LIGHT ) ) {
+            luminance += vp.bonus / iteration;
+            iteration = iteration * 1.1f;
+        }
+    }
+    return luminance;
+}
+
 units::power vehicle::total_accessory_epower() const
 {
     units::power epower = 0_W;
@@ -6442,20 +6468,33 @@ void vehicle::make_active( item_location &loc )
     active_items.add( target, cargo_part->mount );
 }
 
-int vehicle::add_charges( map &here, vehicle_part &vp, const item &itm )
+std::optional<vehicle_stack::iterator> vehicle::add_charges_where( map &here, vehicle_part &vp,
+        const item &itm, int &added )
 {
+    added = 0;
     if( !itm.count_by_charges() ) {
         debugmsg( "Add charges was called for an item not counted by charges!" );
-        return 0;
+        return std::nullopt;
     }
     const int ret = get_items( vp ).amount_can_fit( itm );
     if( ret == 0 ) {
-        return 0;
+        return std::nullopt;
     }
 
     item itm_copy = itm;
     itm_copy.charges = ret;
-    return add_item( here, vp, itm_copy ) ? ret : 0;
+    std::optional<vehicle_stack::iterator> where = add_item( here, vp, itm_copy );
+    if( where ) {
+        added = ret;
+    }
+    return where;
+}
+
+int vehicle::add_charges( map &here, vehicle_part &vp, const item &itm )
+{
+    int added = 0;
+    add_charges_where( here, vp, itm, added );
+    return added;
 }
 
 std::optional<vehicle_stack::iterator> vehicle::add_item( map &here, vehicle_part &vp,

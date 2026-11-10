@@ -26,6 +26,17 @@
   },
   {
     "type": "effect_on_condition",
+    "id": "EOC_START_SCARLET_STORM_SCENARIO_ADJUST_EAST",
+    "//": "Adjusts the storm to start further east to accomodate for starts on the ocean coast. Moves the storm roughly three weeks east",
+    "effect": [
+      { "math": [ "scarlet_storm_focus_a1.x = scarlet_storm_focus_a1.x + 9072" ] },
+      { "math": [ "scarlet_storm_focus_a2.x = scarlet_storm_focus_a2.x + 9072" ] },
+      { "math": [ "scarlet_storm_focus_b1.x = scarlet_storm_focus_b1.x + 9072" ] },
+      { "math": [ "scarlet_storm_focus_b2.x = scarlet_storm_focus_b2.x + 9072" ] }
+    ]
+  },
+  {
+    "type": "effect_on_condition",
     "id": "EOC_SCARLET_STORM",
     "recurrence": "8 hours",
     "global": true,
@@ -369,7 +380,8 @@
         "success_message": "Your surroundings warp and fold before reforming into a vast sea, bathed in scarlet light."
       },
       { "u_message": "Darkness envelops you.", "popup": true, "popup_w_interrupt_query": true },
-      { "run_eocs": "EOC_PORTAL_SCARLET_SEA_RETURN", "time_in_future": [ "20 minutes", "2 hours" ] }
+      { "run_eocs": "EOC_PORTAL_SCARLET_SEA_RETURN", "time_in_future": [ "20 minutes", "2 hours" ] },
+      { "run_eocs": "EOC_DIMENSION_TELE_SICKNESS" }
     ]
   },
   {
@@ -396,7 +408,8 @@
         "u_message": "Your surroundings warp and fold into the recesses of the world you know.",
         "popup": true,
         "popup_w_interrupt_query": true
-      }
+      },
+      { "run_eocs": "EOC_DIMENSION_TELE_SICKNESS" }
     ],
     "false_effect": [
       {

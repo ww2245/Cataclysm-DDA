@@ -102,7 +102,6 @@
 #include "weather.h"
 
 static const activity_id ACT_FIRSTAID( "ACT_FIRSTAID" );
-static const activity_id ACT_REPAIR_ITEM( "ACT_REPAIR_ITEM" );
 
 static const damage_type_id damage_acid( "acid" );
 static const damage_type_id damage_bash( "bash" );
@@ -126,6 +125,8 @@ static const efftype_id effect_stunned( "stunned" );
 
 static const fault_id fault_bionic_salvaged( "fault_bionic_salvaged" );
 
+static const flag_id json_flag_PSEUDO( "PSEUDO" );
+
 static const furn_str_id furn_f_kiln_empty( "f_kiln_empty" );
 static const furn_str_id furn_f_kiln_metal_empty( "f_kiln_metal_empty" );
 static const furn_str_id furn_f_kiln_portable_empty( "f_kiln_portable_empty" );
@@ -138,9 +139,15 @@ static const itype_id itype_barrel_small( "barrel_small" );
 static const itype_id itype_brazier( "brazier" );
 static const itype_id itype_char_smoker( "char_smoker" );
 static const itype_id itype_fire( "fire" );
+static const itype_id itype_large_repairkit( "large_repairkit" );
 static const itype_id itype_power_cord( "power_cord" );
+static const itype_id itype_small_repairkit( "small_repairkit" );
+static const itype_id itype_soldering_iron( "soldering_iron" );
 static const itype_id itype_stock_none( "stock_none" );
 static const itype_id itype_syringe( "syringe" );
+static const itype_id itype_welder( "welder" );
+static const itype_id itype_welder_crude( "welder_crude" );
+static const itype_id itype_welding_kit( "welding_kit" );
 
 static const json_character_flag json_flag_MANUAL_CBM_INSTALLATION( "MANUAL_CBM_INSTALLATION" );
 static const json_character_flag json_flag_NO_LIMB_FIRST_AID( "NO_LIMB_FIRST_AID" );
@@ -1458,6 +1465,13 @@ std::unique_ptr<iuse_actor> firestarter_actor::clone() const
     return std::make_unique<firestarter_actor>( *this );
 }
 
+bool firestarter_actor::is_firewood_source( const map &here, const tripoint_bub_ms &pos )
+{
+    return here.tr_at( pos ).id == tr_firewood_source ||
+           !zone_manager::get_manager().get_zones( zone_type_SOURCE_FIREWOOD,
+                   here.get_abs( pos ) ).empty();
+}
+
 firestarter_actor::start_type firestarter_actor::prep_firestarter_use( Character &p,
         map *here, tripoint_bub_ms &pos )
 {
@@ -1498,20 +1512,9 @@ firestarter_actor::start_type firestarter_actor::prep_firestarter_use( Character
         return start_type::NONE;
     }
     // check if there's a fire fuel source spot
-    bool target_is_firewood = false;
-    if( here->tr_at( pos ).id == tr_firewood_source ) {
-        target_is_firewood = true;
-    } else {
-        zone_manager &mgr = zone_manager::get_manager();
-        auto zones = mgr.get_zones( zone_type_SOURCE_FIREWOOD, here->get_abs( pos ) );
-        if( !zones.empty() ) {
-            target_is_firewood = true;
-        }
-    }
-    if( target_is_firewood ) {
-        if( !query_yn( _( "Do you really want to burn your firewood source?" ) ) ) {
-            return start_type::NONE;
-        }
+    if( is_firewood_source( *here, pos ) &&
+        !query_yn( _( "Do you really want to burn your firewood source?" ) ) ) {
+        return start_type::NONE;
     }
     // Don't check if we're setting a fire on top of a fireplace
     if( !here->has_flag_furn( "FIRE_CONTAINER", pos ) ) {
@@ -3116,11 +3119,25 @@ std::optional<int> repair_item_actor::use( Character *p, item &it,
         return std::nullopt;
     }
 
-    p->assign_activity( ACT_REPAIR_ITEM, 0, p->get_item_position( &it ), INT_MIN );
-    // We also need to store the repair actor subtype in the activity
-    p->activity.str_values.push_back( type );
-    // storing of item_location to support repairs by tools on the ground
-    p->activity.targets.emplace_back( form_loc( *p, here, pos, it ) );
+    // HACK: see struct `weldrig_hack`
+    // the ammo-loaded pseudo item passed to this function is not used!
+    std::optional<std::pair<itype_id, tripoint_bub_ms>> vp_tool;
+    itype_id tool_type = it.typeId();
+    if( ( tool_type == itype_welder ||
+          tool_type == itype_welder_crude ||
+          tool_type == itype_welding_kit ||
+          tool_type == itype_soldering_iron ||
+          tool_type == itype_small_repairkit ||
+          tool_type == itype_large_repairkit ) &&
+        here->veh_at( pos ).has_value() &&
+        it.has_flag( json_flag_PSEUDO )
+      ) {
+        vp_tool.emplace( tool_type.str(), pos );
+    }
+
+    p->assign_activity( repair_item_activity_actor( item_location::nowhere,
+                        vp_tool.has_value() ? item_location::nowhere : form_loc( *p, here, pos, it ),
+                        vp_tool, type ) );
     // All repairs are done in the activity, including charge cost and target item selection
     return 0;
 }
@@ -3165,6 +3182,11 @@ bool repair_item_actor::handle_components( Character &pl, const item &fix,
         }
 
         return false;
+    }
+
+    // a bare check never reads the counts below, so skip walking the crafting inventory
+    if( just_check && !check_consumed_available ) {
+        return true;
     }
 
     const temp_crafting_inventory &crafting_inv = pl.crafting_inventory();
@@ -3361,7 +3383,6 @@ std::pair<float, float> repair_item_actor::repair_chance(
             action_difficulty = material_difficulty;
             break;
         default:
-            // 5 is obsoleted reinforcing, remove after 0.H
             action_difficulty = 1000000; // ensure failure
             break;
     }
@@ -4147,6 +4168,19 @@ void place_trap_actor::data::load( const JsonObject &obj )
     optional( obj, false, "moves", moves, 100 );
 }
 
+int place_trap_actor::data::move_cost( const Character &you ) const
+{
+    const float skill = you.get_skill_level( skill_traps );
+    int move_cost_final = std::round( moves / ( skill <= 1 ? 1 : skill ) );
+    if( !you.has_proficiency( proficiency_prof_trapsetting ) ) {
+        move_cost_final = move_cost_final * 2;
+    }
+    if( !you.has_proficiency( proficiency_prof_traps ) ) {
+        move_cost_final = move_cost_final * 4;
+    }
+    return move_cost_final;
+}
+
 void place_trap_actor::load( const JsonObject &obj, const std::string & )
 {
     optional( obj, false, "allow_underwater", allow_underwater, false );
@@ -4307,19 +4341,8 @@ std::optional<int> place_trap_actor::use( Character *p, item &it, map *here,
     p->practice_proficiency( proficiency_prof_trapsetting,
                              time_duration::from_seconds( data.practice * 30 ) );
 
-    //Total time to set the trap will be determined by player's skills and proficiencies
-    int move_cost_final = std::round( ( data.moves * std::min( 1,
-                                        ( data.practice ^ 2 ) ) ) / ( p->get_skill_level( skill_traps ) <= 1 ? 1 : p->get_skill_level(
-                                                skill_traps ) ) );
-    if( !p->has_proficiency( proficiency_prof_trapsetting ) ) {
-        move_cost_final = move_cost_final * 2;
-    }
-    if( !p->has_proficiency( proficiency_prof_traps ) ) {
-        move_cost_final = move_cost_final * 4;
-    }
-
     //This probably needs to be done via assign_activity
-    p->mod_moves( -move_cost_final );
+    p->mod_moves( -data.move_cost( *p ) );
 
     place_and_add_as_known( *p, pos, data.trap );
     const trap &placed_trap = here->tr_at( pos );
